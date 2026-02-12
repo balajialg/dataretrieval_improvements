@@ -56,12 +56,8 @@ jobs:
             // Get issue URL
             const issueUrl = issue.html_url;
             
-            // Mask email immediately for FERPA compliance
-            if (email) {
-              core.setSecret(email);
-            }
-            
-            core.info('Email extracted and masked for FERPA compliance');
+            // DO NOT mask email here - it needs to be passed to subsequent jobs
+            core.info('Email extracted (will be masked after issue processing)');
             core.info(`Extracted link: ${link}`);
             core.info(`Issue URL: ${issueUrl}`);
             
