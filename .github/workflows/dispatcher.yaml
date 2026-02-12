@@ -7,7 +7,7 @@ permissions:
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]
 
 jobs:
   label_check:
