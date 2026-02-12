@@ -1,0 +1,102 @@
+name: Data Retrieval Dispatcher
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  label_check:
+    name: Check if data retrieval label exists
+    runs-on: ubuntu-latest
+    outputs:
+      should_process: ${{ steps.check.outputs.should_process }}
+    steps:
+      - name: Check for data retrieval label
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.issue.labels.map(label => label.name);
+            const hasDataRetrievalLabel = labels.includes('data retrieval');
+            core.setOutput('should_process', hasDataRetrievalLabel);
+            core.info(`Has data retrieval label: ${hasDataRetrievalLabel}`);
+            return hasDataRetrievalLabel;
+
+  handle_issue:
+    name: Extract issue data and prepare for processing
+    runs-on: ubuntu-latest
+    needs: label_check
+    if: needs.label_check.outputs.should_process == 'true'
+    outputs:
+      receiver_email: ${{ steps.extract.outputs.receiver_email }}
+      extracted_link: ${{ steps.extract.outputs.extracted_link }}
+      issue_url: ${{ steps.extract.outputs.issue_url }}
+    steps:
+      - name: Extract information from issue
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const issueBody = issue.body || '';
+            
+            // Extract email address
+            const emailMatch = issueBody.match(/###\s*Your UC Berkeley Email Address\s*\n\s*([^\n]+@[^\n]+)/i);
+            const email = emailMatch ? emailMatch[1].trim() : '';
+            
+            // Extract DataHub folder link
+            const linkMatch = issueBody.match(/###\s*Link to Your Datahub Folder\s*\n\s*(gs:\/\/[^\n]+)/i);
+            const link = linkMatch ? linkMatch[1].trim() : '';
+            
+            // Get issue URL
+            const issueUrl = issue.html_url;
+            
+            core.info(`Extracted email: ${email}`);
+            core.info(`Extracted link: ${link}`);
+            core.info(`Issue URL: ${issueUrl}`);
+            
+            core.setOutput('receiver_email', email);
+            core.setOutput('extracted_link', link);
+            core.setOutput('issue_url', issueUrl);
+
+  process_requests:
+    name: Process data retrieval request
+    runs-on: ubuntu-latest
+    needs: handle_issue
+    if: needs.handle_issue.outputs.receiver_email != '' && needs.handle_issue.outputs.extracted_link != ''
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install google-api-python-client google-auth-oauthlib google-cloud-storage requests
+
+      - name: Run data retrieval and email script
+        env:
+          RECEIVER_EMAIL: ${{ needs.handle_issue.outputs.receiver_email }}
+          EXTRACTED_LINK: ${{ needs.handle_issue.outputs.extracted_link }}
+          ISSUE_URL: ${{ needs.handle_issue.outputs.issue_url }}
+          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          TOKEN_PICKLE: ${{ secrets.TOKEN_PICKLE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/sign_url_and_send_emails.py
+      
+      - name: Close issue after processing
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.payload.issue.number;
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: 'closed'
+            });
