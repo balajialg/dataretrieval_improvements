@@ -56,7 +56,12 @@ jobs:
             // Get issue URL
             const issueUrl = issue.html_url;
             
-            core.info(`Extracted email: ${email}`);
+            // Mask email immediately for FERPA compliance
+            if (email) {
+              core.setSecret(email);
+            }
+            
+            core.info('Email extracted and masked for FERPA compliance');
             core.info(`Extracted link: ${link}`);
             core.info(`Issue URL: ${issueUrl}`);
             
@@ -118,7 +123,7 @@ jobs:
       - name: Validate extracted data
         run: |
           echo "✅ Successfully extracted data from issue:"
-          echo "  Email: ${{ needs.handle_issue.outputs.receiver_email }}"
+          echo "  Email: ***"
           echo "  Link: ${{ needs.handle_issue.outputs.extracted_link }}"
           echo "  Issue URL: ${{ needs.handle_issue.outputs.issue_url }}"
           echo ""
@@ -191,10 +196,12 @@ jobs:
             core.info('Issue closed successfully');
 
       - name: Mask email from workflow logs (FERPA compliance)
+        env:
+          RECEIVER_EMAIL: ${{ needs.handle_issue.outputs.receiver_email }}
         uses: actions/github-script@v7
         with:
           script: |
-            const email = '${{ needs.handle_issue.outputs.receiver_email }}';
+            const email = process.env.RECEIVER_EMAIL;
             if (email) {
               core.setSecret(email);
               core.info('✅ Email address masked from all workflow logs for FERPA compliance');
