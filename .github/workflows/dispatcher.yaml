@@ -1,5 +1,10 @@
 name: Data Retrieval Dispatcher
 
+# Add permissions at workflow level
+permissions:
+  issues: write
+  contents: read
+
 on:
   issues:
     types: [opened, labeled]
