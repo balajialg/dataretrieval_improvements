@@ -56,7 +56,14 @@ jobs:
             // Get issue URL
             const issueUrl = issue.html_url;
             
-            core.info(`Extracted email: ${email}`);
+            // Mask the email in logs for privacy
+            if (email) {
+              core.setSecret(email);
+              core.info('Email extracted and masked from logs for privacy');
+            } else {
+              core.warning('No email found in issue body');
+            }
+            
             core.info(`Extracted link: ${link}`);
             core.info(`Issue URL: ${issueUrl}`);
             
@@ -118,7 +125,7 @@ jobs:
       - name: Validate extracted data
         run: |
           echo "✅ Successfully extracted data from issue:"
-          echo "  Email: ${{ needs.handle_issue.outputs.receiver_email }}"
+          echo "  Email: [REDACTED - Masked in logs for privacy]"
           echo "  Link: ${{ needs.handle_issue.outputs.extracted_link }}"
           echo "  Issue URL: ${{ needs.handle_issue.outputs.issue_url }}"
           echo ""
@@ -162,8 +169,9 @@ jobs:
             const comment = `### ⚠️ Test Mode - Email Workflow Disabled
             
             **Your data retrieval request has been processed (TEST MODE):**
+            - � Email: [REDACTED FOR FERPA COMPLIANCE]
             - 📁 Archived file location: \`${link}\`
-            - ✅ Email address has been redacted for FERPA compliance
+            - ✅ Email address has been redacted from issue body for FERPA compliance
             
             **Note:** Email sending is currently disabled for testing. In production mode, you would receive an email with signed URLs to download your archived files.
             
