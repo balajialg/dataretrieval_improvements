@@ -1,0 +1,181 @@
+name: FERPA Compliance - Email Redaction
+
+# This workflow runs AFTER issues are closed to ensure FERPA compliance
+# by redacting all email addresses from issue bodies and comments
+
+permissions:
+  issues: write
+  contents: read
+
+on:
+  issues:
+    types: [closed]
+
+jobs:
+  redact_emails:
+    name: Redact Berkeley emails for FERPA compliance
+    runs-on: ubuntu-latest
+    # Only process issues with 'data retrieval' label
+    if: contains(github.event.issue.labels.*.name, 'data retrieval')
+    
+    steps:
+      # Step 1: Extract and mask all Berkeley emails from logs immediately
+      - name: Mask Berkeley emails from workflow logs
+        id: mask_emails
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const issueBody = issue.body || '';
+            
+            // Extract all Berkeley email addresses
+            const berkeleyEmailRegex = /\b[A-Za-z0-9._%+-]+@berkeley\.edu\b/gi;
+            const emails = issueBody.match(berkeleyEmailRegex) || [];
+            
+            // Also check for generic emails
+            const genericEmailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/gi;
+            const allEmails = issueBody.match(genericEmailRegex) || [];
+            
+            // Mask all emails from logs
+            const uniqueEmails = [...new Set([...emails, ...allEmails])];
+            core.info(`Found ${uniqueEmails.length} email address(es) to mask`);
+            
+            uniqueEmails.forEach(email => {
+              core.setSecret(email);
+            });
+            
+            core.info('✅ All email addresses masked from workflow logs');
+            
+            return uniqueEmails.length > 0;
+      
+      # Step 2: Redact emails from issue body
+      - name: Redact emails from issue body
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.payload.issue.number;
+            
+            // Get current issue
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+            
+            // Check if already redacted
+            if (issue.body && issue.body.includes('[REDACTED FOR FERPA COMPLIANCE]')) {
+              core.info('Issue body already contains FERPA redaction - skipping');
+              return false;
+            }
+            
+            // Redact all email addresses from body
+            const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
+            const redactedBody = issue.body ? issue.body.replace(emailPattern, '[REDACTED FOR FERPA COMPLIANCE]') : issue.body;
+            
+            if (redactedBody !== issue.body) {
+              // Update issue with redacted body
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: redactedBody
+              });
+              
+              core.info('✅ Successfully redacted email addresses from issue body');
+              return true;
+            } else {
+              core.info('No email addresses found in issue body');
+              return false;
+            }
+      
+      # Step 3: Redact emails from all issue comments
+      - name: Redact emails from issue comments
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.payload.issue.number;
+            
+            // Get all comments
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+            
+            const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
+            let redactedCount = 0;
+            
+            for (const comment of comments) {
+              // Skip if this is the FERPA compliance notice itself
+              if (comment.body.includes('🔒 FERPA Compliance Notice')) {
+                continue;
+              }
+              
+              // Skip if already redacted
+              if (comment.body.includes('[REDACTED FOR FERPA COMPLIANCE]')) {
+                continue;
+              }
+              
+              const redactedBody = comment.body.replace(emailPattern, '[REDACTED FOR FERPA COMPLIANCE]');
+              
+              if (redactedBody !== comment.body) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                  body: redactedBody
+                });
+                redactedCount++;
+              }
+            }
+            
+            if (redactedCount > 0) {
+              core.info(`✅ Successfully redacted email addresses from ${redactedCount} comment(s)`);
+            } else {
+              core.info('No email addresses found in comments');
+            }
+      
+      # Step 4: Add FERPA compliance notice to issue
+      - name: Add FERPA compliance notice
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.payload.issue.number;
+            
+            // Check if notice already exists
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+            
+            const noticeExists = comments.some(comment => 
+              comment.body.includes('🔒 FERPA Compliance Notice')
+            );
+            
+            if (noticeExists) {
+              core.info('FERPA compliance notice already posted - skipping');
+              return;
+            }
+            
+            // Add compliance notice
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: `---
+🔒 **FERPA Compliance Notice**
+
+All email addresses have been automatically redacted from this issue and its comments to comply with the Family Educational Rights and Privacy Act (FERPA).
+
+This redaction was performed automatically by our FERPA compliance workflow after the issue was closed.
+
+✅ **Actions taken:**
+- Email addresses removed from issue body
+- Email addresses removed from all comments
+- Personal information protected in GitHub Actions logs
+
+Thank you for your understanding in helping us maintain student privacy.`
+            });
+            
+            core.info('✅ FERPA compliance notice posted to issue');

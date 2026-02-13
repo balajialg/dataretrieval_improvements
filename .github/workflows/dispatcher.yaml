@@ -109,9 +109,10 @@ jobs:
   #             state: 'closed'
   #           });
 
-  # TEST MODE - Skip email sending but do FERPA redaction and close issue
+  # TEST MODE - Skip email sending but validate and close issue
+  # FERPA compliance (email redaction) is handled by separate workflow after issue closure
   test_validation:
-    name: Test - Validate, redact email (FERPA), and close issue
+    name: Test - Validate and close issue
     runs-on: ubuntu-latest
     needs: handle_issue
     if: needs.handle_issue.outputs.receiver_email != '' && needs.handle_issue.outputs.extracted_link != ''
@@ -124,34 +125,8 @@ jobs:
           echo "  Issue URL: ${{ needs.handle_issue.outputs.issue_url }}"
           echo ""
           echo "⚠️  EMAIL WORKFLOW DISABLED FOR TESTING"
-          echo "⚠️  Proceeding with FERPA redaction and issue closure"
-
-      - name: Redact email from issue body (FERPA compliance)
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const issueNumber = context.payload.issue.number;
-            
-            // Get current issue
-            const { data: issue } = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issueNumber
-            });
-            
-            // Redact email addresses from body
-            const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
-            const redactedBody = issue.body.replace(emailPattern, '[REDACTED FOR FERPA COMPLIANCE]');
-            
-            // Update issue with redacted body
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issueNumber,
-              body: redactedBody
-            });
-            
-            core.info('Successfully redacted email addresses from issue body');
+          echo "⚠️  Proceeding with issue closure"
+          echo "📋 FERPA compliance will be handled automatically after issue closes"
 
       - name: Comment on issue (TEST MODE)
         uses: actions/github-script@v7
@@ -163,11 +138,12 @@ jobs:
             const comment = `### ⚠️ Test Mode - Email Workflow Disabled
             
             **Your data retrieval request has been processed (TEST MODE):**
-            - � Email: [REDACTED FOR FERPA COMPLIANCE]
+            - 📧 Email: Will be redacted automatically (FERPA compliance)
             - 📁 Archived file location: \`${link}\`
-            - ✅ Email address has been redacted from issue body for FERPA compliance
             
             **Note:** Email sending is currently disabled for testing. In production mode, you would receive an email with signed URLs to download your archived files.
+            
+            **🔒 FERPA Compliance:** After this issue is closed, all email addresses will be automatically redacted from the issue body, comments, and GitHub Actions logs by our compliance workflow.
             
             This issue is being automatically closed.`;
             
@@ -178,7 +154,7 @@ jobs:
               body: comment
             });
 
-      - name: Close issue
+      - name: Close issue (triggers FERPA compliance workflow)
         uses: actions/github-script@v7
         with:
           script: |
@@ -189,16 +165,5 @@ jobs:
               issue_number: issueNumber,
               state: 'closed'
             });
-            core.info('Issue closed successfully');
-
-      - name: Mask email from workflow logs (FERPA compliance)
-        env:
-          RECEIVER_EMAIL: ${{ needs.handle_issue.outputs.receiver_email }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const email = process.env.RECEIVER_EMAIL;
-            if (email) {
-              core.setSecret(email);
-              core.info('✅ Email address masked from all workflow logs for FERPA compliance');
-            }
+            core.info('✅ Issue closed successfully');
+            core.info('📋 FERPA compliance workflow will now run automatically to redact all email addresses');
