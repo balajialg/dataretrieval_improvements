@@ -28,25 +28,41 @@ jobs:
             const issue = context.payload.issue;
             const issueBody = issue.body || '';
             
-            // Extract all Berkeley email addresses
-            const berkeleyEmailRegex = /\b[A-Za-z0-9._%+-]+@berkeley\.edu\b/gi;
-            const emails = issueBody.match(berkeleyEmailRegex) || [];
+            core.info('Issue body length: ' + issueBody.length);
             
-            // Also check for generic emails
-            const genericEmailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/gi;
-            const allEmails = issueBody.match(genericEmailRegex) || [];
+            // Multiple email patterns to catch everything
+            const berkeleyEmailRegex = /[A-Za-z0-9._%+-]+@berkeley\.edu/gi;
+            const genericEmailRegex1 = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gi;
+            const genericEmailRegex2 = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi;
             
-            // Mask all emails from logs
-            const uniqueEmails = [...new Set([...emails, ...allEmails])];
-            core.info(`Found ${uniqueEmails.length} email address(es) to mask`);
-            
-            uniqueEmails.forEach(email => {
-              core.setSecret(email);
+            // Extract all emails using multiple patterns
+            const emails = [];
+            [berkeleyEmailRegex, genericEmailRegex1, genericEmailRegex2].forEach(regex => {
+              const matches = issueBody.match(regex);
+              if (matches) {
+                emails.push(...matches);
+              }
             });
             
-            core.info('✅ All email addresses masked from workflow logs');
+            // Get unique emails
+            const uniqueEmails = [...new Set(emails)];
             
-            return uniqueEmails.length > 0;
+            core.info(`Found ${uniqueEmails.length} email address(es) to mask`);
+            
+            if (uniqueEmails.length > 0) {
+              // Mask all emails from logs
+              uniqueEmails.forEach(email => {
+                core.setSecret(email);
+                core.info(`Masked: ${email.substring(0, 2)}***@***`);
+              });
+              
+              core.info('✅ All email addresses masked from workflow logs');
+              return true;
+            } else {
+              core.warning('⚠️ No email addresses found to mask');
+              core.info('Issue body preview: ' + issueBody.substring(0, 300));
+              return false;
+            }
       
       # Step 2: Redact emails from issue body
       - name: Redact emails from issue body
@@ -62,17 +78,58 @@ jobs:
               issue_number: issueNumber
             });
             
+            core.info('Original issue body length: ' + (issue.body ? issue.body.length : 0));
+            
             // Check if already redacted
             if (issue.body && issue.body.includes('[REDACTED FOR FERPA COMPLIANCE]')) {
               core.info('Issue body already contains FERPA redaction - skipping');
               return false;
             }
             
-            // Redact all email addresses from body
-            const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
-            const redactedBody = issue.body ? issue.body.replace(emailPattern, '[REDACTED FOR FERPA COMPLIANCE]') : issue.body;
+            if (!issue.body) {
+              core.info('Issue body is empty - skipping');
+              return false;
+            }
+            
+            // Multiple email patterns to catch all formats
+            let redactedBody = issue.body;
+            
+            // Pattern 1: Standard email addresses (most permissive)
+            const emailPattern1 = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gi;
+            
+            // Pattern 2: Email addresses with word boundaries
+            const emailPattern2 = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi;
+            
+            // Pattern 3: Berkeley emails specifically
+            const berkeleyPattern = /[A-Za-z0-9._%+-]+@berkeley\.edu/gi;
+            
+            // Apply all patterns
+            const emails = [];
+            [emailPattern1, emailPattern2, berkeleyPattern].forEach(pattern => {
+              const matches = issue.body.match(pattern);
+              if (matches) {
+                emails.push(...matches);
+              }
+            });
+            
+            // Get unique emails
+            const uniqueEmails = [...new Set(emails)];
+            
+            if (uniqueEmails.length > 0) {
+              core.info(`Found ${uniqueEmails.length} email(s) to redact: ${uniqueEmails.map(e => e.substring(0, 3) + '***').join(', ')}`);
+              
+              // Replace each unique email
+              uniqueEmails.forEach(email => {
+                // Escape special regex characters in the email for safe replacement
+                const escapedEmail = email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const replaceRegex = new RegExp(escapedEmail, 'gi');
+                redactedBody = redactedBody.replace(replaceRegex, '[REDACTED FOR FERPA COMPLIANCE]');
+              });
+            }
             
             if (redactedBody !== issue.body) {
+              core.info('Redacted body preview: ' + redactedBody.substring(0, 200));
+              
               // Update issue with redacted body
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -84,7 +141,8 @@ jobs:
               core.info('✅ Successfully redacted email addresses from issue body');
               return true;
             } else {
-              core.info('No email addresses found in issue body');
+              core.info('⚠️ No email addresses found in issue body');
+              core.info('Issue body preview: ' + issue.body.substring(0, 300));
               return false;
             }
       
@@ -102,23 +160,49 @@ jobs:
               issue_number: issueNumber
             });
             
-            const emailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
+            core.info(`Found ${comments.length} comment(s) to check`);
+            
+            // Multiple email patterns
+            const emailPattern1 = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gi;
+            const emailPattern2 = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi;
+            const berkeleyPattern = /[A-Za-z0-9._%+-]+@berkeley\.edu/gi;
+            
             let redactedCount = 0;
             
             for (const comment of comments) {
               // Skip if this is the FERPA compliance notice itself
               if (comment.body.includes('🔒 FERPA Compliance Notice')) {
+                core.info(`Skipping compliance notice comment #${comment.id}`);
                 continue;
               }
               
               // Skip if already redacted
               if (comment.body.includes('[REDACTED FOR FERPA COMPLIANCE]')) {
+                core.info(`Comment #${comment.id} already redacted - skipping`);
                 continue;
               }
               
-              const redactedBody = comment.body.replace(emailPattern, '[REDACTED FOR FERPA COMPLIANCE]');
+              // Find all emails in this comment
+              const emails = [];
+              [emailPattern1, emailPattern2, berkeleyPattern].forEach(pattern => {
+                const matches = comment.body.match(pattern);
+                if (matches) {
+                  emails.push(...matches);
+                }
+              });
               
-              if (redactedBody !== comment.body) {
+              const uniqueEmails = [...new Set(emails)];
+              
+              if (uniqueEmails.length > 0) {
+                core.info(`Found ${uniqueEmails.length} email(s) in comment #${comment.id}`);
+                
+                let redactedBody = comment.body;
+                uniqueEmails.forEach(email => {
+                  const escapedEmail = email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                  const replaceRegex = new RegExp(escapedEmail, 'gi');
+                  redactedBody = redactedBody.replace(replaceRegex, '[REDACTED FOR FERPA COMPLIANCE]');
+                });
+                
                 await github.rest.issues.updateComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
