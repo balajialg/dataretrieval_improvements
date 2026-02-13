@@ -159,23 +159,27 @@ jobs:
             }
             
             // Add compliance notice
+            const noticeBody = [
+              '---',
+              '🔒 **FERPA Compliance Notice**',
+              '',
+              'All email addresses have been automatically redacted from this issue and its comments to comply with the Family Educational Rights and Privacy Act (FERPA).',
+              '',
+              'This redaction was performed automatically by our FERPA compliance workflow after the issue was closed.',
+              '',
+              '✅ **Actions taken:**',
+              '- Email addresses removed from issue body',
+              '- Email addresses removed from all comments',
+              '- Personal information protected in GitHub Actions logs',
+              '',
+              'Thank you for your understanding in helping us maintain student privacy.'
+            ].join('\n');
+            
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
-              body: `---
-🔒 **FERPA Compliance Notice**
-
-All email addresses have been automatically redacted from this issue and its comments to comply with the Family Educational Rights and Privacy Act (FERPA).
-
-This redaction was performed automatically by our FERPA compliance workflow after the issue was closed.
-
-✅ **Actions taken:**
-- Email addresses removed from issue body
-- Email addresses removed from all comments
-- Personal information protected in GitHub Actions logs
-
-Thank you for your understanding in helping us maintain student privacy.`
+              body: noticeBody
             });
             
             core.info('✅ FERPA compliance notice posted to issue');
