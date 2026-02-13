@@ -1,49 +1,133 @@
 # FERPA Compliance Implementation Guide
 
+## ⚠️ Important GitHub Actions Limitation
+
+**Discovery**: When a GitHub Actions workflow uses the default `GITHUB_TOKEN` to perform actions (like closing an issue), it **does NOT trigger other workflows**. This is a security feature to prevent infinite workflow loops.
+
+### Impact on Original Design
+
+The initial two-workflow design (dispatcher.yaml → closes issue → ferpa-compliance.yaml) **does not work** because:
+1. `dispatcher.yaml` closes the issue using `GITHUB_TOKEN`
+2. GitHub Actions blocks `ferpa-compliance.yaml` from triggering
+3. No email redaction occurs
+
+### Solutions Implemented
+
+#### ✅ **Solution 1: Combined Workflow (ACTIVE)**
+Location: `.github/workflows/dispatcher.yaml`
+
+The FERPA compliance logic is integrated as a separate job (`ferpa_compliance`) that runs after the main workflow within the same workflow file. This works because jobs within the same workflow can communicate.
+
+**Advantages:**
+- ✅ Works with default `GITHUB_TOKEN`
+- ✅ No additional secrets needed
+- ✅ Guaranteed to run after issue closure
+- ✅ Single workflow file for easy review
+
+**Structure:**
+```
+dispatcher.yaml:
+  Job 1: label_check
+  Job 2: handle_issue
+  Job 3: test_validation (closes issue)
+  Job 4: ferpa_compliance (redacts emails) ← NEW
+```
+
+#### 🔧 **Solution 2: Standalone Workflow with PAT**
+Location: `.github/workflows/ferpa-compliance.yaml` (reference implementation)
+
+The standalone workflow can work if you use a Personal Access Token (PAT) instead of `GITHUB_TOKEN` in the dispatcher workflow.
+
+**Requirements:**
+1. Create a PAT with `repo` scope
+2. Add as repository secret (e.g., `PAT_TOKEN`)
+3. Update dispatcher.yaml to use PAT when closing issues:
+   ```yaml
+   github-token: ${{ secrets.PAT_TOKEN }}
+   ```
+
+**Advantages:**
+- ✅ True separation of workflows
+- ✅ Can be disabled independently
+- ✅ Easier to understand for reviewers
+
+**Disadvantages:**
+- ⚠️ Requires additional secret configuration
+- ⚠️ PAT has broader permissions
+- ⚠️ PAT expires and needs renewal
+
+#### 📝 **Solution 3: Manual Dispatch**
+Location: `.github/workflows/ferpa-compliance.yaml`
+
+The standalone workflow supports manual triggering for testing:
+
+```bash
+gh workflow run ferpa-compliance.yaml -f issue_number=123
+```
+
 ## Overview
 
-This repository implements a **separate, non-intrusive workflow** for FERPA compliance that automatically redacts email addresses from GitHub issues and workflow logs. This design ensures it can be safely added to existing repositories without breaking current automation.
+## Architecture (Current Implementation)
 
-## Architecture
+### Single-Workflow Design with Separate Jobs
 
-### Two-Workflow Design
+#### Workflow File: `dispatcher.yaml`
 
-#### 1. **Main Workflow** (`dispatcher.yaml`)
-- **Purpose**: Handles data retrieval requests
-- **Trigger**: When issues are opened with "data retrieval" label
-- **Responsibilities**:
-  - Validates issue has required label
-  - Extracts email and GCS link from issue body
-  - Processes data retrieval (or runs in test mode)
-  - Closes issue after processing
-- **FERPA Impact**: None - doesn't modify issue content
+**Jobs:**
 
-#### 2. **FERPA Compliance Workflow** (`ferpa-compliance.yaml`)
-- **Purpose**: Redacts sensitive information for FERPA compliance
-- **Trigger**: When issues with "data retrieval" label are **closed**
-- **Responsibilities**:
-  - Masks emails from GitHub Actions logs
-  - Redacts emails from issue body
-  - Redacts emails from all issue comments
-  - Posts FERPA compliance notice
-- **Independent**: Runs completely separately without affecting main workflow
+1. **`label_check`**
+   - **Purpose**: Validates issue has "data retrieval" label
+   - **Triggers**: On issue opened
+   - **Outputs**: `should_process` (true/false)
 
-## Why This Design is Safe for PRs
+2. **`handle_issue`**
+   - **Purpose**: Extracts email and GCS link from issue
+   - **Depends on**: `label_check`
+   - **Outputs**: `receiver_email`, `extracted_link`, `issue_url`
+
+3. **`test_validation`** (or `process_requests` in production)
+   - **Purpose**: Processes data retrieval request and closes issue
+   - **Depends on**: `handle_issue`
+   - **Actions**: Validates data, comments on issue, closes issue
+
+4. **`ferpa_compliance`** ⭐ NEW
+   - **Purpose**: FERPA email redaction
+   - **Depends on**: `test_validation`
+   - **Runs**: Always (even if previous job fails)
+   - **Actions**:
+     - Masks emails from GitHub Actions logs
+     - Redacts emails from issue body
+     - Redacts emails from all comments
+     - Posts FERPA compliance notice
+
+#### Alternative File: `ferpa-compliance.yaml`
+
+This standalone workflow file is kept for:
+- Reference implementation
+- Alternative approach using PAT
+- Manual testing via workflow dispatch
+- Future migration if PAT is configured
+
+**Status**: Inactive by default (won't trigger with default token)
+
+## How It Works (Current)
+
+### ✅ **Addresses GitHub Actions Limitation**
+- Works with default `GITHUB_TOKEN` (no additional secrets)
+- No dependency on PAT expiration or renewal
+- Guaranteed to run (jobs within same workflow always execute)
 
 ### ✅ **Non-Breaking Changes**
-- New workflow file added, existing workflows untouched
-- Only activates on issues with specific label
-- Can be disabled by simply not including the workflow file
+- FERPA logic added as new job at end of workflow
+- Existing jobs unchanged (only closing step comment updated)
+- Can be disabled by commenting out one job
+- Easy rollback by removing job section
 
 ### ✅ **Clear Separation of Concerns**
-- Main workflow = business logic
-- FERPA workflow = compliance
-- No interdependencies between workflows
-
-### ✅ **Gradual Adoption**
-- Can be tested independently
-- Can be rolled out to specific issue types first
-- Easy to audit and review
+- Job 1-3: Business logic (data retrieval)
+- Job 4: Compliance logic (FERPA redaction)
+- Separate job = separate logs for easy debugging
+- Uses `if: always()` to run even if previous jobs fail
 
 ### ✅ **Backwards Compatible**
 - Doesn't modify existing issue templates
@@ -55,44 +139,63 @@ This repository implements a **separate, non-intrusive workflow** for FERPA comp
 ```
 .github/
 ├── workflows/
-│   ├── dispatcher.yaml              # Main data retrieval workflow
-│   └── ferpa-compliance.yaml        # NEW: FERPA compliance workflow
+│   ├── dispatcher.yaml              ← ACTIVE: Includes FERPA job (Job 4)
+│   └── ferpa-compliance.yaml        ← REFERENCE: Standalone version (inactive)
 ├── scripts/
-│   ├── sign_url_and_send_emails.py  # Existing script (unchanged)
-│   └── username_mapping.py          # Existing script (unchanged)
+│   ├── sign_url_and_send_emails.py  ← Existing script (unchanged)
+│   └── username_mapping.py          ← Existing script (unchanged)
 └── ISSUE_TEMPLATE/
-    └── data_archival_request.yml    # Existing template (unchanged)
+    └── data_archival_request.yml    ← Existing template (unchanged)
 ```
 
-## How It Works
+### File Purposes
+
+- **`dispatcher.yaml`**: Main workflow with integrated FERPA compliance (active)
+- **`ferpa-compliance.yaml`**: Alternative implementation using workflow triggers or manual dispatch (reference only)
+- **Scripts**: Unchanged from original implementation
+- **Issue template**: Unchanged from original implementation
+
+## FERPA Compliance Features
 
 ### Workflow Sequence
 
 ```
-1. User creates issue with email → dispatcher.yaml triggers
-                                    │
-2. Issue is processed              │
-                                    │
-3. Issue is closed                 │
-                                    │
-4. ferpa-compliance.yaml triggers  ←─
-                                    │
-5. Email redacted from:             │
-   - Issue body                     │
-   - All comments                   │
-   - GitHub Actions logs            │
-                                    │
-6. Compliance notice posted         │
+1. User creates issue with email
+   ↓
+2. label_check job validates "data retrieval" label
+   ↓
+3. handle_issue job extracts email & link
+   ↓
+4. test_validation job processes & closes issue
+   ↓
+5. ferpa_compliance job (same workflow) redacts emails  ⭐
+   • Masks emails in logs
+   • Redacts from issue body
+   • Redacts from comments
+   • Posts compliance notice
 ```
 
 ### Timeline
 
-- **T+0s**: Issue opened
-- **T+30s**: Dispatcher workflow completes, issue closed
-- **T+35s**: FERPA workflow triggers automatically
+- **T+0s**: Issue opened with data retrieval request
+- **T+10s**: Email and link extracted (visible in logs temporarily)
+- **T+30s**: Issue closed after processing
+- **T+35s**: FERPA job starts (same workflow, next job)
 - **T+45s**: All emails redacted, compliance notice posted
 
-## FERPA Compliance Features
+### Key Difference from Original Design
+
+**Original (Doesn't Work):**
+- Two separate workflows
+- Issue closed → triggers second workflow
+- ❌ Second workflow never runs (GitHub limitation)
+
+**Current (Works):**
+- Single workflow, multiple jobs
+- Issue closed → next job runs automatically
+- ✅ FERPA redaction always happens
+
+## Why This Design is Safe for PRs
 
 ### ✅ What Gets Redacted
 
