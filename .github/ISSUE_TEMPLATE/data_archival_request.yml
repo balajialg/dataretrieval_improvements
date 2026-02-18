@@ -10,7 +10,7 @@ body:
       value: |
         Please follow the sections in the template and provide us the information required to retrieve your files!
         
-        > [!WARNING]
+        > [!NOTE]
         > **FERPA Compliance:** Please remove or crop out any names, usernames, or email addresses from screenshots.
   - type: textarea
     id: email
