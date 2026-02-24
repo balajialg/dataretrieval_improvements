@@ -1,0 +1,259 @@
+name: Issue Created and Label Found
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+    secrets:
+      DATA_RETRIEVAL_SA:
+        required: true
+      TOKEN_PICKLE: 
+        required: true
+  
+
+jobs:
+  label_check:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write 
+    outputs:
+      label_found: ${{ steps.check_label.outputs.label_found }}
+
+    steps:
+      - name: Check if "data retrieval" label is present
+        id: check_label
+        run: |
+          echo "Labels: ${{ toJson(github.event.issue.labels) }}"
+    
+          if [[ "${{ contains(github.event.issue.labels.*.name, 'data retrieval') }}" == "true" ]]; then
+            echo "Label 'data retrieval' found. Proceeding..."
+            echo "label_found=true" >> $GITHUB_ENV
+            echo "label_found=true" >> $GITHUB_OUTPUT
+          else
+            echo "Label 'data retrieval' not found. Exiting..."
+            echo "label_found=false" >> $GITHUB_ENV
+            echo "label_found=false" >> $GITHUB_OUTPUT
+          fi
+
+  folder_and_email_extraction:
+    needs: label_check
+    if: needs.label_check.outputs.label_found == 'true'  # Run only if label is found
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write 
+    outputs:
+      folder_found: ${{ steps.extract_link.outputs.folder_found }}
+      email_found: ${{ steps.extract_link.outputs.email_found }}
+      folderlink: ${{ steps.extract_link.outputs.folderlink}}
+      email: ${{ steps.extract_link.outputs.email }}
+
+    steps:
+      - name: Extract the "Link to Your Folder" from issue body
+        id: extract_link
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = context.issue.number;
+            const issueBody = `${{ github.event.issue.body }}`;
+            const repo = context.repo;
+            
+            async function run() {
+              let folderlink = "";
+              let email = "";
+              
+              // Define patterns for the link and email
+              const linkPattern = /gs:\/\/[^\s]+\.tar\.gz/g;  // Ensure global flag `g`
+              const emailPattern = /([a-zA-Z0-9._%+-]+@berkeley\.edu)(?=\b|\))/;
+              
+              // Extract all matching folder links
+              let folderLinks = [];
+              let match;
+              while ((match = linkPattern.exec(issueBody)) !== null) {
+                folderLinks.push(match[0]); // Extract full link
+              }
+
+              if (folderLinks.length > 0) {
+                console.log(`Found links: ${folderLinks.join(", ")}`);
+                
+                // Store all links as a comma-separated string
+                core.setOutput("folderlink", folderLinks.join(","));  
+                core.setOutput("folder_found", "true");  
+              } else {
+                console.log("No valid folder link found. Leaving a comment and closing the issue.");
+                core.setOutput("folder_found", "false");  
+
+                // Leave a comment on the issue
+                await github.rest.issues.createComment({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  issue_number: issueNumber,
+                  body: `Please resubmit the request with a valid link to the resource you requested. The link can be found in the \`WHERE-ARE-MY-FILES.txt\` file in your home directory when you log into JupyterHub.
+                        **Steps to find your link**:
+                        1. **Identify your hub and log in.**  
+                          For example, 
+                          - DataHub: [https://datahub.berkeley.edu](https://datahub.berkeley.edu)  
+                          - Data8: [https://data8.datahub.berkeley.edu](https://data8.datahub.berkeley.edu)  
+                          - R Hub: [https://r.datahub.berkeley.edu](https://r.datahub.berkeley.edu)  
+                        2. **Find the \`WHERE-ARE-MY-FILES.txt\` file in your home directory.**  
+                        3. **Copy and paste the URL inside \`WHERE-ARE-MY-FILES.txt\` into your browser.**  
+                            This will open a GitHub data retrieval request.  
+                        4. **Fill in your Berkeley email address and submit the GitHub issue.**
+                        If you no longer have access to the hub where WHERE-ARE-MY-FILES.txt is stored or if you lost access to bcourse, please contact datahub-dataretrieval@berkeley.edu.`
+                });
+
+                // Add the "failed data retrieval" label
+                await github.rest.issues.addLabels({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  issue_number: issueNumber,
+                  labels: ['failed data retrieval']
+                });
+
+                // Close the issue
+                await github.rest.issues.update({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  issue_number: issueNumber,
+                  state: "closed"
+                });
+
+                return; // Exit early since there's no valid folder link
+              }
+
+              // Extract email
+              const emailMatch = issueBody.match(emailPattern);
+              if (emailMatch && emailMatch[1]) {
+                email = emailMatch[1].trim();
+                console.log(`Found email: ${email}`);
+                core.setOutput("email", email);
+                core.setOutput("email_found", "true");
+              } else {
+                console.log("No valid email found. Leaving a comment and closing the issue.");
+                core.setOutput("email_found", "false");
+
+                // Leave a comment for missing email
+                await github.rest.issues.createComment({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  issue_number: issueNumber,
+                  body: "**Missing Email Address.**\n\nPlease provide your UC Berkeley email address and resubmit your request."
+                });
+
+                // Add the "failed data retrieval" label
+                await github.rest.issues.addLabels({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  issue_number: issueNumber,
+                  labels: ['failed data retrieval']
+                });
+
+                // Close the issue
+                await github.rest.issues.update({
+                  owner: repo.owner,
+                  repo: repo.repo,
+                  issue_number: issueNumber,
+                  state: "closed"
+                });
+
+                return; // Exit early since there's no valid email
+              }
+            }
+
+            run().catch(error => console.error("Error:", error));
+
+  process_requests:
+    needs: folder_and_email_extraction
+    if: needs.folder_and_email_extraction.outputs.folder_found == 'true' && needs.folder_and_email_extraction.outputs.email_found == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write 
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Set up Python environment
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.11'
+
+      - name: Check whether email matches the folder name
+        env:
+          EXTRACTED_LINK: ${{ needs.folder_and_email_extraction.outputs.folderlink}}
+          RECEIVER_EMAIL: ${{ needs.folder_and_email_extraction.outputs.email }}
+        run: |
+          python3 .github/scripts/username_mapping.py
+      
+      - name: Check if environment variable is "invalid"
+        id: check_env_var
+        run: |
+          if [ "${{ env.emailMatchesFolder }}" == "invalid" ]; then
+            echo "Some of the links to the requested resources do not match the owner of the provided email. Please double check your email and the paths to the requested resources, and submit a new Github issue with correct information."
+            
+            # Post a comment on the issue
+            COMMENT_BODY='Some of the links to the requested resources do not match the owner of the provided email. Please double check your email and the paths to the requested resources, and submit a new Github issue with correct information.'
+            ISSUE_NUMBER=${{ github.event.issue.number }}
+            curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"body\": \"$COMMENT_BODY\"}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments" > /dev/null 2>&1
+            
+            # Add the "failed data retrieval" label
+            curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{"labels":["failed data retrieval"]}' \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/labels" > /dev/null 2>&1
+              
+            # Close the issue
+            curl -s -X PATCH \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{"state": "closed"}' \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" > /dev/null 2>&1
+          else
+            echo "Environment variable is valid, continuing."
+          fi
+
+      - name: Install Google Cloud SDK and Python Client Libraries
+        if: ${{ env.emailMatchesFolder == 'valid' }} 
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install --upgrade google-cloud-storage google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+
+      - name: Sign URL and send emails
+        id: run_send_email_python_script
+        env:
+          EXTRACTED_LINK: ${{ needs.folder_and_email_extraction.outputs.folderlink}}
+          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.DATA_RETRIEVAL_SA }}
+          TOKEN_PICKLE: ${{ secrets.TOKEN_PICKLE }}
+          RECEIVER_EMAIL: ${{ needs.folder_and_email_extraction.outputs.email }}
+          ISSUE_URL: "https://github.com/${{ github.repository }}/issues/${{ github.event.issue.number }}"
+        if: ${{ env.emailMatchesFolder == 'valid' }} 
+        run: |
+          python3 .github/scripts/sign_url_and_send_emails.py
+
+      - name: Post success comment and close the issue
+        if: steps.run_send_email_python_script.outcome == 'success' 
+        run: |
+          # Post a success comment on the issue
+          COMMENT_BODY='The requested resource has been sent to your provided email address. You have 7 days from when the email was received to retrieve your data. If you do not see the email, check for your spam box and look for an email sent from datahub-dataretrieval@berkeley.edu.'
+
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"body\": \"$COMMENT_BODY\"}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments" > /dev/null 2>&1
+          
+          # Close the issue
+          curl -s -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"state": "closed"}' \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" > /dev/null 2>&1
+
+          
